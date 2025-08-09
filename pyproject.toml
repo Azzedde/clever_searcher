@@ -6,7 +6,9 @@ build-backend = "hatchling.build"
 name = "clever-searcher"
 version = "0.1.0"
 description = "Autonomous web discovery and digest agent"
-authors = [{name = "User", email = "user@example.com"}]
+authors = [{name = "Azzedine", email = "aitsaid.azzedineidir@gmail.com"}]
+homepage = "https://azzedde.github.io/"
+repository = "https://github.com/Azzedde/clever_searcher"
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"

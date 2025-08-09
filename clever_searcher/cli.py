@@ -71,8 +71,8 @@ def init() -> None:
 
 # LLM Configuration (for Ollama)
 OPENAI_BASE_URL=http://localhost:11434/v1
-MODEL_PLANNER=llama3.1
-MODEL_SUMMARY=llama3.1
+MODEL_PLANNER=llama3.2:3b
+MODEL_SUMMARY=llama3.2:3b
 
 # Or use OpenAI
 # OPENAI_API_KEY=your_openai_key_here

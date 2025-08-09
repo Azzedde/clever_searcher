@@ -1,124 +1,126 @@
 # Clever Searcher
 
-An autonomous web discovery and digest agent that plans, searches, fetches, extracts, de-duplicates, ranks, summarizes, and publishes content based on your interests.
+An intelligent web discovery and content analysis agent that autonomously searches, fetches, analyzes, and summarizes web content based on your queries. Built with LLM-powered planning, multi-source search, smart deduplication, and personalized scoring.
 
-## Architecture
+## What It Actually Does
 
+Clever Searcher takes a natural language query and:
+
+1. **🧠 Plans** - Uses LLM to generate diverse search queries and crawl strategies
+2. **🔍 Searches** - Searches DuckDuckGo and/or Tavily for relevant content
+3. **📥 Fetches** - Downloads content using httpx with Playwright fallback for JS-heavy sites
+4. **🔄 Deduplicates** - Removes duplicate content using URL canonicalization and content hashing
+5. **📝 Summarizes** - Generates structured summaries with key points, tags, and entities
+6. **⭐ Scores** - Ranks content using embeddings and personalization (with simple fallback)
+7. **📊 Outputs** - Creates markdown digests, JSON exports, and database storage
+8. **🎯 Learns** - Collects preference data for GRPO training and personalization
+
+## Key Features
+
+- **🆓 Free to Use**: DuckDuckGo search (no API keys) + Ollama support (local LLM)
+- **🤖 LLM-Powered Planning**: Intelligent query generation and crawl strategy
+- **🔄 Smart Deduplication**: URL canonicalization + content fingerprinting
+- **📊 Structured Summaries**: Key points, tags, entities, and read time estimates
+- **🎯 Personalization**: Embedding-based scoring with user feedback learning
+- **📈 Preference Learning**: GRPO dataset collection for model improvement
+- **🔧 Flexible Architecture**: Modular components with fallback modes
+- **📋 Rich Logging**: Complete operation tracking and analytics
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/Azzedde/clever_searcher.git
+cd clever_searcher
+
+# Install the package
+pip install -e .
 ```
-[Category Input]
-      ↓
-   Planner (LLM) ──► Query generator + crawl strategy
-      ↓
-   Searcher (DuckDuckGo) ──► SERP links (seed frontier)
-      ↓
-   Crawler/Extractor (httpx/Playwright + trafilatura/readability)
-      ↓
-   De-duper + Canonicalizer (URL norm + content hash)
-      ↓
-   Personalization Scorer (embeddings + rules + feedback)
-      ↓
-   Summarizer (LLM map→reduce + structured fields)
-      ↓
-   Store (SQLite + FAISS) + CSV export
-      ↓
-   Digest (Markdown/HTML/Streamlit dashboard)
-      ↓
-   Scheduler (APS/cron) + Revisit policy
-```
-
-## Features
-
-- **Intelligent Planning**: LLM-powered query generation and crawl strategy
-- **Free Search**: DuckDuckGo integration (no API keys required!)
-- **Smart Extraction**: Content extraction with trafilatura and readability
-- **De-duplication**: URL canonicalization and content fingerprinting
-- **Personalization**: Embedding-based scoring with feedback learning
-- **Structured Summaries**: LLM-generated summaries with bullets, tags, entities
-- **Flexible Storage**: SQLite + FAISS for semantic search
-- **Automated Scheduling**: Configurable revisit policies per source
-- **Rich Output**: Markdown digests, CSV exports, Streamlit dashboard
 
 ## Quick Start
 
-1. **Install dependencies:**
-   ```bash
-   pip install -e .
-   ```
-
-2. **Initialize the system:**
-   ```bash
-   clever-searcher init
-   ```
-
-3. **Configure your LLM (choose one):**
-   
-   **Option A: Ollama (Free, Local)**
-   ```bash
-   # Install Ollama from https://ollama.ai
-   ollama pull llama3.1
-   # The system will auto-detect Ollama
-   ```
-   
-   **Option B: OpenAI API**
-   ```bash
-   # Edit .env file
-   OPENAI_API_KEY=your_api_key_here
-   OPENAI_BASE_URL=https://api.openai.com/v1
-   ```
-
-4. **Run your first discovery:**
-   ```bash
-   clever-searcher discover "AI papers" --max-pages 10 --dry-run
-   clever-searcher discover "crypto news" --max-pages 15
-   ```
-
-5. **View results:**
-   ```bash
-   ls output/  # Check generated digests
-   ```
-
-## Usage Examples
-
-### Discover AI Papers
+### 1. Initialize the System
 ```bash
-clever-searcher discover "machine learning papers" \
-  --sites arxiv.org,paperswithcode.com \
-  --max-pages 25
+clever-searcher init
 ```
 
-### Job Search
+### 2. Configure LLM (Choose One)
+
+**Option A: Ollama (Free, Local)**
 ```bash
-clever-searcher discover "python developer jobs" \
-  --sites ycombinator.com,stackoverflow.com \
-  --max-pages 30
+# Install Ollama from https://ollama.ai
+ollama pull llama3.2:3b
+# System auto-detects Ollama at http://localhost:11434
 ```
 
-### Crypto News
+**Option B: OpenAI API**
 ```bash
-clever-searcher discover "cryptocurrency news" \
-  --sites coindesk.com,cointelegraph.com \
-  --max-pages 20
+# Create .env file
+echo "OPENAI_API_KEY=your_api_key_here" > .env
+echo "OPENAI_BASE_URL=https://api.openai.com/v1" >> .env
 ```
 
-### Custom Research
+### 3. Run Your First Discovery
+
 ```bash
-clever-searcher discover "startup funding" \
-  --query "Series A venture capital" \
-  --max-pages 40 \
-  --output-format json
+# Dry run to see the plan
+clever-searcher discover "AI research papers" --max-pages 20 --dry-run
+
+# Full discovery
+clever-searcher discover "AI research papers" --max-pages 20
+
+# With specific sites
+clever-searcher discover "crypto news" --sites "coindesk.com,cointelegraph.com" --max-pages 15
+
+# Different output format
+clever-searcher discover "python tutorials" --output-format json --max-pages 10
+```
+
+## CLI Commands
+
+### Core Commands
+```bash
+# Discovery
+clever-searcher discover "your query" [options]
+
+# System management
+clever-searcher init          # Initialize database and directories
+clever-searcher status        # Show system status
+clever-searcher reset         # Reset database
+clever-searcher dashboard     # Launch Streamlit dashboard
+clever-searcher logs          # View recent logs
+
+# Preference learning
+clever-searcher preferences stats     # Dataset statistics
+clever-searcher preferences pending   # Sessions needing feedback
+clever-searcher preferences review    # Review and provide feedback
+clever-searcher preferences export    # Export GRPO training data
+```
+
+### Discovery Options
+```bash
+--max-pages N           # Maximum pages to fetch (default: 50)
+--max-queries N         # Maximum search queries to generate (default: 6)
+--sites "site1,site2"   # Preferred sites to search
+--search-engine ENGINE  # duckduckgo or tavily
+--output-format FORMAT  # markdown, json, or csv
+--dry-run              # Show plan without executing
 ```
 
 ## Configuration
 
-The system works out of the box with sensible defaults. For customization, edit `.env`:
+The system works with sensible defaults. Customize via `.env`:
 
 ```env
-# LLM Configuration (Ollama - Free)
-OPENAI_BASE_URL=http://localhost:11434/v1
-MODEL_PLANNER=llama3.1
-MODEL_SUMMARY=llama3.1
+# LLM Configuration
+OPENAI_API_KEY=your_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1  # or http://localhost:11434/v1 for Ollama
+MODEL_PLANNER=gpt-4o-mini                  # or llama3.2:3b for Ollama
+MODEL_SUMMARY=gpt-4o-mini                  # or llama3.2:3b for Ollama
 
 # Search Configuration
+TAVILY_API_KEY=your_tavily_key            # Optional: for Tavily search
+DEFAULT_SEARCH_ENGINE=duckduckgo          # duckduckgo or tavily
 MAX_PAGES_PER_RUN=50
 REQUEST_DELAY=1.0
 
@@ -131,44 +133,126 @@ OUTPUT_DIR=output
 DIGEST_FORMAT=markdown
 ```
 
+## Architecture
+
+```
+Query Input
+    ↓
+🧠 LLM Planner → Generates search queries + strategy
+    ↓
+🔍 Multi-Searcher → DuckDuckGo/Tavily search
+    ↓
+📥 Smart Fetcher → httpx + Playwright fallback
+    ↓
+🔄 Deduplicator → URL canonicalization + content hashing
+    ↓
+📝 LLM Summarizer → Structured summaries with metadata
+    ↓
+⭐ Personalization → Embedding-based scoring + user preferences
+    ↓
+💾 Storage → SQLite database + file exports
+    ↓
+📊 Digest Generator → Markdown/JSON/CSV outputs
+    ↓
+🎯 Preference Collector → GRPO training data
+```
+
 ## Project Structure
 
 ```
 clever_searcher/
-├── core/           # Core components
-│   ├── planner.py     # LLM-based planning
-│   ├── searcher.py    # DuckDuckGo search
-│   ├── fetcher.py     # Content fetching
-│   └── ...
-├── storage/        # Data persistence
-│   ├── models.py      # SQLAlchemy models
-│   ├── database.py    # Database setup
-│   └── ...
-├── utils/          # Utilities
-│   ├── config.py      # Configuration
-│   └── ...
-└── cli.py          # Command-line interface
+├── agent.py              # Main orchestrator
+├── cli.py                # Command-line interface
+├── core/                 # Core processing components
+│   ├── planner.py        # LLM-based query planning
+│   ├── searcher.py       # Multi-source search (DuckDuckGo/Tavily)
+│   ├── fetcher.py        # Content fetching (httpx/Playwright)
+│   ├── deduper.py        # Deduplication and canonicalization
+│   ├── summarizer.py     # LLM-powered summarization
+│   ├── scorer.py         # Embedding-based personalization
+│   └── simple_scorer.py  # Fallback scoring without embeddings
+├── storage/              # Data persistence
+│   ├── models.py         # SQLAlchemy models
+│   └── database.py       # Database management
+├── output/               # Output generation
+│   └── digest.py         # Multi-format digest generation
+├── logging/              # Advanced logging
+│   ├── operation_logger.py    # Complete operation tracking
+│   └── preference_collector.py # GRPO dataset collection
+└── utils/                # Configuration and utilities
+    └── config.py         # Settings management
 ```
 
-## Why Clever Searcher?
+## Use Cases
 
-- **🆓 Completely Free**: Uses DuckDuckGo (no API keys needed) + Ollama (local LLM)
-- **🧠 Smart Planning**: LLM generates diverse, effective search queries
-- **⚡ Fast & Efficient**: Async processing with intelligent fallbacks
-- **🎯 Personalized**: Learns your preferences over time
-- **📊 Rich Output**: Multiple formats (Markdown, JSON, CSV)
-- **🔧 Extensible**: Clean architecture for adding new features
+### Research & Discovery
+```bash
+# Academic research
+clever-searcher discover "machine learning interpretability papers" --sites "arxiv.org,paperswithcode.com"
+
+# Market research
+clever-searcher discover "fintech startup funding 2024" --max-pages 30
+
+# Technology trends
+clever-searcher discover "rust programming language adoption" --max-queries 8
+```
+
+### News & Monitoring
+```bash
+# Industry news
+clever-searcher discover "AI regulation updates" --sites "techcrunch.com,arstechnica.com"
+
+# Company monitoring
+clever-searcher discover "OpenAI latest developments" --max-pages 25
+```
+
+### Learning & Tutorials
+```bash
+# Technical tutorials
+clever-searcher discover "advanced python asyncio patterns" --sites "realpython.com,python.org"
+
+# Best practices
+clever-searcher discover "microservices architecture patterns" --output-format json
+```
+
+## Advanced Features
+
+### Preference Learning
+The system collects preference data for GRPO (Generalized Preference Optimization) training:
+
+```bash
+# View collected data
+clever-searcher preferences stats
+
+# Review and provide feedback
+clever-searcher preferences review session_id
+
+# Export training dataset
+clever-searcher preferences export --output training_data.jsonl
+```
+
+### Personalization
+- Learns from your interactions and feedback
+- Uses embeddings to understand content preferences
+- Adapts scoring based on your interests
+- Falls back to simple scoring if embeddings fail
+
+### Smart Fallbacks
+- Playwright fallback for JavaScript-heavy sites
+- Simple scoring fallback if embeddings fail
+- Multiple search engines with automatic failover
+- Graceful degradation for all components
 
 ## Development
 
 ```bash
-# Install dev dependencies
+# Install development dependencies
 pip install -e ".[dev]"
 
 # Run tests
 pytest
 
-# Format code
+# Code formatting
 black .
 isort .
 
@@ -180,22 +264,51 @@ mypy clever_searcher
 
 ### Common Issues
 
-1. **Installation fails**: Make sure you have Python 3.10+
-2. **LLM errors**: Install Ollama or configure OpenAI API key
-3. **Search failures**: DuckDuckGo might be rate-limiting; reduce `--max-pages`
-4. **Import errors**: Run `pip install -e .` from the project root
+1. **LLM Connection Errors**
+   - For Ollama: Ensure it's running (`ollama serve`)
+   - For OpenAI: Check API key in `.env`
 
-### Get Help
+2. **Search Failures**
+   - DuckDuckGo may rate-limit; reduce `--max-pages`
+   - Try switching to Tavily with `--search-engine tavily`
+
+3. **Content Fetching Issues**
+   - Some sites block automated requests
+   - Playwright fallback handles most JS-heavy sites
+
+4. **Embedding Errors**
+   - System automatically falls back to simple scoring
+   - Check internet connection for model downloads
+
+### Getting Help
 
 ```bash
 clever-searcher --help
 clever-searcher status
+clever-searcher logs
 ```
+
+## Why Clever Searcher?
+
+- **🎯 Intelligent**: LLM-powered planning creates better search strategies
+- **🔄 Robust**: Multiple fallback mechanisms ensure reliability
+- **📊 Comprehensive**: Complete pipeline from search to structured output
+- **🎓 Learning**: Builds preference datasets for continuous improvement
+- **🆓 Accessible**: Works with free tools (DuckDuckGo + Ollama)
+- **🔧 Extensible**: Modular architecture for easy customization
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
-Contributions welcome! Please read the contributing guidelines and submit pull requests.
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Submit a pull request
+
+## Author
+
+**Azzedine** - [Website](https://azzedde.github.io/) | [GitHub](https://github.com/Azzedde)
