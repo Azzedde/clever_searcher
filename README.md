@@ -1,4 +1,5 @@
 # Clever Searcher
+<img width="1413" height="783" alt="Screenshot from 2025-08-09 14-49-00" src="https://github.com/user-attachments/assets/e66923f8-e46a-4695-8d61-a6f34d5693d6" />
 
 An intelligent web discovery and content analysis agent that autonomously searches, fetches, analyzes, and summarizes web content based on your queries. Built with LLM-powered planning, multi-source search, smart deduplication, and personalized scoring.
 
@@ -89,6 +90,7 @@ clever-searcher status        # Show system status
 clever-searcher reset         # Reset database
 clever-searcher dashboard     # Launch Streamlit dashboard
 clever-searcher logs          # View recent logs
+<img width="1288" height="642" alt="Screenshot from 2025-08-09 14-48-07" src="https://github.com/user-attachments/assets/fb5f98f1-9ce5-4f47-8938-c7c0d4424fdc" />
 
 # Preference learning
 clever-searcher preferences stats     # Dataset statistics
@@ -230,6 +232,7 @@ clever-searcher preferences review session_id
 # Export training dataset
 clever-searcher preferences export --output training_data.jsonl
 ```
+<img width="1285" height="458" alt="Screenshot from 2025-08-09 14-47-27" src="https://github.com/user-attachments/assets/9d3eb230-e5e6-43b1-8294-93109159e0cc" />
 
 ### Personalization
 - Learns from your interactions and feedback
