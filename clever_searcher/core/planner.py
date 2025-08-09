@@ -51,7 +51,7 @@ class CrawlPlan:
 class LLMPlanner:
     """LLM-powered planning for web discovery"""
     
-    def __init__(self, model: str = None, base_url: str = None, api_key: str = None):
+    def __init__(self, model: Optional[str] = None, base_url: Optional[str] = None, api_key: Optional[str] = None):
         self.model = model or settings.model_planner
         self.base_url = base_url or settings.openai_base_url
         self.api_key = api_key or settings.openai_api_key
@@ -91,22 +91,27 @@ class LLMPlanner:
     
     async def create_plan(
         self,
-        category: str,
-        user_query: str = "",
+        query: str,
         max_queries: int = 6,
-        max_pages: int = None,
-        custom_sites: List[str] = None,
+        max_pages: Optional[int] = None,
+        custom_sites: Optional[List[str]] = None,
     ) -> CrawlPlan:
-        """Create a comprehensive crawl plan for the given category"""
+        """Create a comprehensive crawl plan for the given query"""
         
         if max_pages is None:
             max_pages = settings.max_pages_per_run
         
-        logger.info(f"Creating crawl plan for category: {category}")
+        logger.info(f"Creating crawl plan for query: {query}")
+        
+        # Generate category, queries, and planning details from the main query
+        plan_details = await self._generate_initial_plan_details(query, max_queries)
+        
+        category = plan_details.get("category", "general")
+        queries = plan_details.get("queries", [query])
         
         # Get category-specific config
         category_config = self.category_configs.get(
-            category.lower().replace(" ", "_"), 
+            category.lower().replace(" ", "_"),
             {
                 "preferred_sites": [],
                 "freshness_days": 7,
@@ -115,136 +120,104 @@ class LLMPlanner:
             }
         )
         
-        # Generate queries using LLM
-        queries = await self._generate_queries(category, user_query, max_queries)
-        
-        # Generate additional planning details
-        planning_details = await self._generate_planning_details(category, queries)
-        
-        # Combine with category config
-        preferred_sites = custom_sites or category_config["preferred_sites"]
+        # Combine with category config and generated details
+        preferred_sites = custom_sites or plan_details.get("preferred_sites", category_config["preferred_sites"])
         
         plan = CrawlPlan(
             category=category,
             queries=queries,
-            must_have_keywords=planning_details.get("must_have_keywords", []),
-            avoid_keywords=planning_details.get("avoid_keywords", []),
+            must_have_keywords=plan_details.get("must_have_keywords", []),
+            avoid_keywords=plan_details.get("avoid_keywords", []),
             preferred_sites=preferred_sites,
-            avoid_domains=planning_details.get("avoid_domains", []),
+            avoid_domains=plan_details.get("avoid_domains", []),
             max_pages=max_pages,
             max_pages_per_domain=min(max_pages // 3, settings.max_pages_per_domain),
-            freshness_days=category_config["freshness_days"],
-            include_news=category_config["include_news"],
-            time_range=category_config["time_range"],
-            priority_score=planning_details.get("priority_score", 0.5),
+            freshness_days=int(category_config.get("freshness_days", 7)),
+            include_news=bool(category_config.get("include_news", False)),
+            time_range=str(category_config.get("time_range", "w")),
+            priority_score=plan_details.get("priority_score", 0.5),
             estimated_duration_minutes=self._estimate_duration(max_pages),
         )
         
-        logger.info(f"Created crawl plan with {len(queries)} queries for {max_pages} pages")
+        logger.info(f"Created crawl plan for '{category}' with {len(queries)} queries for {max_pages} pages")
         return plan
     
-    async def _generate_queries(
-        self, 
-        category: str, 
-        user_query: str, 
+    async def _generate_initial_plan_details(
+        self,
+        query: str,
         max_queries: int
-    ) -> List[str]:
-        """Generate diverse search queries for the category"""
+    ) -> Dict[str, Any]:
+        """Generate a full plan from a single complex user query."""
         
-        system_prompt = """You are an expert at generating diverse, effective search queries for web discovery.
+        system_prompt = """You are an expert at interpreting complex user queries and creating a detailed web search plan.
         
-Your task is to create search queries that will find the most relevant and high-quality content for a given category.
+Your task is to analyze the user's query and extract a structured search plan.
+
+You must return a JSON object with the following fields:
+- category: A short, descriptive category for the query (e.g., "AI Research", "Market Analysis", "Software Development").
+- queries: An array of {max_queries} diverse and effective search queries that break down the user's request.
+- must_have_keywords: An array of keywords that are essential for relevant content.
+- avoid_keywords: An array of keywords to filter out irrelevant content.
+- preferred_sites: An array of high-quality websites or domains relevant to the query.
+- avoid_domains: An array of low-quality domains to avoid.
+- priority_score: A float from 0.0 to 1.0 indicating the query's importance.
 
 Guidelines:
-- Generate diverse queries that cover different aspects of the topic
-- Use specific terminology and keywords relevant to the domain
-- Include both broad and specific queries
-- Consider using site: operators for known high-quality sources
-- Avoid overly generic queries
-- Make queries that would work well with search engines like DuckDuckGo
+- Infer the category from the query's content.
+- Generate diverse queries covering different facets of the request.
+- Identify specific, high-signal keywords.
+- Suggest reputable sites (e.g., academic journals, industry news, official documentation).
+- Base the priority on the query's implied urgency or depth.
+"""
 
-Return your response as a JSON object with a "queries" field containing an array of strings."""
+        user_prompt = f"""User Query: "{query}"
+Max Queries: {max_queries}
 
-        user_prompt = f"""Category: {category}
-User query: {user_query}
-Max queries: {max_queries}
+Analyze this query and generate a structured search plan.
 
-Generate {max_queries} diverse search queries for this category. If a user query is provided, incorporate it into the queries while still maintaining diversity.
-
-Examples for different categories:
-- AI Papers: "transformer architecture papers", "site:arxiv.org attention mechanism", "neural network optimization 2024"
-- Crypto News: "bitcoin price analysis", "ethereum upgrade news", "cryptocurrency regulation"
-- Tech Jobs: "python developer remote", "site:ycombinator.com hiring", "machine learning engineer jobs"
-
-Focus on creating queries that will find high-quality, recent content relevant to the category."""
-
-        try:
-            response = await self._call_llm(system_prompt, user_prompt)
-            queries_data = json.loads(response)
-            queries = queries_data.get("queries", [])
-            
-            # Ensure we have at least one query
-            if not queries:
-                queries = [category]
-            
-            return queries[:max_queries]
-            
-        except Exception as e:
-            logger.error(f"Failed to generate queries: {e}")
-            # Fallback to simple queries
-            return [category, f"{category} latest", f"{category} news"]
-    
-    async def _generate_planning_details(
-        self, 
-        category: str, 
-        queries: List[str]
-    ) -> Dict[str, Any]:
-        """Generate additional planning details like keywords and priorities"""
-        
-        system_prompt = """You are an expert content curator who helps filter and prioritize web content.
-
-Your task is to analyze a category and its search queries to provide filtering criteria and priorities.
-
-Return your response as a JSON object with these fields:
-- must_have_keywords: Array of keywords that high-quality content should contain
-- avoid_keywords: Array of keywords that indicate low-quality or irrelevant content
-- avoid_domains: Array of domains known for low-quality content (spam, clickbait, etc.)
-- priority_score: Float between 0-1 indicating how important/urgent this category is
-- content_quality_indicators: Array of phrases that indicate high-quality content"""
-
-        user_prompt = f"""Category: {category}
-Search queries: {', '.join(queries)}
-
-Analyze this category and provide filtering criteria to help identify high-quality, relevant content while avoiding spam and low-quality sources.
-
-Consider:
-- What keywords indicate authoritative, well-researched content?
-- What keywords suggest clickbait, spam, or low-quality content?
-- What domains are known for poor content quality in this domain?
-- How urgent/important is this type of content (0.1 = low priority, 0.9 = high priority)?"""
+Example:
+User Query: "I need to find the latest research on transformer models in NLP, specifically focusing on efficiency and new architectures. I'm not interested in basic tutorials or marketing content."
+JSON Output:
+{{
+  "category": "AI Research",
+  "queries": [
+    "latest transformer model architectures 2024",
+    "efficient transformers NLP research papers",
+    "site:arxiv.org transformer model optimization",
+    "multi-head attention mechanism improvements",
+    "survey of efficient transformer models"
+  ],
+  "must_have_keywords": ["transformer", "NLP", "efficiency", "architecture", "research"],
+  "avoid_keywords": ["tutorial", "marketing", "introduction", "for beginners"],
+  "preferred_sites": ["arxiv.org", "paperswithcode.com", "aclweb.org", "neurips.cc"],
+  "avoid_domains": ["geeksforgeeks.org", "towardsdatascience.com"],
+  "priority_score": 0.8
+}}
+"""
 
         try:
             response = await self._call_llm(system_prompt, user_prompt)
-            # Clean up the response to handle potential JSON issues
-            cleaned_response = response.strip()
-            if not cleaned_response.startswith('{'):
-                # Find the first { and last }
-                start = cleaned_response.find('{')
-                end = cleaned_response.rfind('}')
-                if start != -1 and end != -1:
-                    cleaned_response = cleaned_response[start:end+1]
+            plan_details = json.loads(response)
             
-            return json.loads(cleaned_response)
+            # Ensure essential fields are present
+            if "queries" not in plan_details or not plan_details["queries"]:
+                plan_details["queries"] = [query]
+            if "category" not in plan_details:
+                plan_details["category"] = "general"
+                
+            return plan_details
             
         except (json.JSONDecodeError, Exception) as e:
-            logger.error(f"Failed to generate planning details: {e}")
-            logger.debug(f"Raw response: {response[:500] if 'response' in locals() else 'No response'}")
+            logger.error(f"Failed to generate initial plan details: {e}")
+            # Fallback to a simple plan
             return {
+                "category": "general",
+                "queries": [query, f"{query} latest", f"{query} overview"],
                 "must_have_keywords": [],
-                "avoid_keywords": ["clickbait", "spam", "advertisement"],
-                "avoid_domains": ["example.com"],
+                "avoid_keywords": ["spam", "advertisement"],
+                "preferred_sites": [],
+                "avoid_domains": [],
                 "priority_score": 0.5,
-                "content_quality_indicators": [],
             }
     
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
@@ -261,6 +234,8 @@ Consider:
                 max_tokens=2000,
             )
             
+            if response.choices[0].message.content is None:
+                raise ValueError("LLM response content is null")
             return response.choices[0].message.content
             
         except Exception as e:

@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 class SimpleContentScorer:
     """Simple content scorer without embeddings"""
     
-    def __init__(self):
+    def __init__(self) -> None:
         # Scoring weights
-        self.weights = {
+        self.weights: Dict[str, float] = {
             'content_quality': 0.30,
             'source_trust': 0.25,
             'freshness': 0.20,
@@ -71,7 +71,7 @@ class SimpleContentScorer:
         )
         
         logger.debug(f"Scored {document.url}: {final_score:.3f} {scores}")
-        return final_score
+        return float(final_score)
     
     def _score_content_quality(
         self,
@@ -108,7 +108,7 @@ class SimpleContentScorer:
     
     def _score_source_trust(self, domain: str) -> float:
         """Score based on source trustworthiness"""
-        return self.source_trust_scores.get(domain.lower(), 0.5)
+        return float(self.source_trust_scores.get(domain.lower(), 0.5))
     
     def _score_freshness(self, published_date: Optional[datetime]) -> float:
         """Score based on content freshness"""
@@ -190,7 +190,7 @@ class SimpleContentScorer:
 class SimplePersonalizationEngine:
     """Simple personalization without embeddings"""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.scorer = SimpleContentScorer()
         self.user_feedback: Dict[str, List[float]] = {}
     

@@ -22,7 +22,7 @@ class StructuredSummary:
         bullets: List[str],
         tags: List[str],
         entities: List[str],
-        key_points: List[str] = None,
+        key_points: Optional[List[str]] = None,
         sentiment: str = "neutral",
         complexity: str = "medium",
         read_time_minutes: int = 0,
@@ -60,7 +60,7 @@ class StructuredSummary:
 class ContentSummarizer:
     """LLM-powered content summarizer with structured output"""
     
-    def __init__(self, model: str = None, base_url: str = None, api_key: str = None):
+    def __init__(self, model: Optional[str] = None, base_url: Optional[str] = None, api_key: Optional[str] = None):
         self.model = model or settings.model_summary
         self.base_url = base_url or settings.openai_base_url
         self.api_key = api_key or settings.openai_api_key
@@ -82,7 +82,7 @@ class ContentSummarizer:
     async def summarize(
         self,
         document: ContentDocument,
-        category: str = "general",
+        query: str,
         max_bullets: int = 5,
         max_tags: int = 8,
         max_entities: int = 10,
@@ -90,12 +90,6 @@ class ContentSummarizer:
         """Generate a structured summary of the document"""
         
         logger.info(f"Summarizing document: {document.title[:50]}...")
-        
-        # Determine category-specific instructions
-        category_instruction = self.category_prompts.get(
-            category.lower().split("_")[0], 
-            "Focus on the main points and key information."
-        )
         
         # Prepare content for summarization
         content_preview = self._prepare_content(document.content)
@@ -105,8 +99,7 @@ class ContentSummarizer:
                 title=document.title,
                 content=content_preview,
                 url=document.url,
-                category=category,
-                category_instruction=category_instruction,
+                query=query,
                 max_bullets=max_bullets,
                 max_tags=max_tags,
                 max_entities=max_entities,
@@ -134,7 +127,7 @@ class ContentSummarizer:
         except Exception as e:
             logger.error(f"Summarization failed for {document.url}: {e}")
             # Return fallback summary
-            return self._create_fallback_summary(document, category)
+            return self._create_fallback_summary(document, query)
     
     def _prepare_content(self, content: str, max_length: int = 8000) -> str:
         """Prepare content for summarization by truncating if needed"""
@@ -158,43 +151,40 @@ class ContentSummarizer:
         title: str,
         content: str,
         url: str,
-        category: str,
-        category_instruction: str,
+        query: str,
         max_bullets: int,
         max_tags: int,
         max_entities: int,
     ) -> Dict[str, Any]:
         """Generate summary using LLM"""
         
-        system_prompt = f"""You are an expert content analyst and summarizer. Your task is to create structured, high-quality summaries of web content.
+        system_prompt = f"""You are an expert content analyst. Your task is to create a structured summary of web content based on a user's query.
 
-{category_instruction}
-
-Return your response as a JSON object with these exact fields:
-- tldr: A concise 1-2 sentence summary (max 200 characters)
-- bullets: Array of {max_bullets} key bullet points (each max 150 characters)
-- tags: Array of {max_tags} relevant tags/keywords (single words or short phrases)
-- entities: Array of {max_entities} important people, organizations, products, or concepts mentioned
-- key_points: Array of 3-5 most important insights or takeaways
-- sentiment: One of "positive", "negative", "neutral", "mixed"
-- complexity: One of "beginner", "intermediate", "advanced"
-- confidence_score: Float between 0.0-1.0 indicating how confident you are in this summary
+Analyze the content and generate a JSON response with these fields:
+- tldr: A concise 1-2 sentence summary (max 200 characters) relevant to the user's query.
+- bullets: An array of {max_bullets} key bullet points (each max 150 characters) that directly address the user's query.
+- tags: An array of {max_tags} relevant tags/keywords.
+- entities: An array of {max_entities} important people, organizations, or concepts.
+- key_points: An array of 3-5 most important insights related to the query.
+- sentiment: The sentiment of the content regarding the query ("positive", "negative", "neutral").
+- complexity: The complexity of the content ("beginner", "intermediate", "advanced").
+- confidence_score: A float (0.0-1.0) indicating your confidence in the summary's relevance to the query.
 
 Guidelines:
-- Be concise but informative
-- Focus on actionable insights and key facts
-- Use clear, accessible language
-- Ensure all arrays contain strings only
-- Make tags lowercase and use underscores for multi-word tags"""
+- Prioritize information that directly answers or relates to the user's query.
+- Be concise, factual, and use clear language.
+- Ensure all arrays contain only strings.
+- Tags should be lowercase, using underscores for multi-word tags."""
 
-        user_prompt = f"""Title: {title}
+        user_prompt = f"""User Query: "{query}"
+
+Title: {title}
 URL: {url}
-Category: {category}
 
 Content:
 {content}
 
-Please analyze this content and provide a structured summary following the JSON format specified."""
+Please analyze this content in the context of the user's query and provide a structured summary in the specified JSON format."""
 
         try:
             response = self.client.chat.completions.create(
@@ -212,13 +202,14 @@ Please analyze this content and provide a structured summary following the JSON 
             if not content_str:
                 raise ValueError("Empty response from LLM")
             
-            return json.loads(content_str)
+            summary_data: Dict[str, Any] = json.loads(content_str)
+            return summary_data
             
         except Exception as e:
             logger.error(f"LLM summarization failed: {e}")
             raise
     
-    def _create_fallback_summary(self, document: ContentDocument, category: str) -> StructuredSummary:
+    def _create_fallback_summary(self, document: ContentDocument, query: str) -> StructuredSummary:
         """Create a basic fallback summary when LLM fails"""
         
         # Extract first few sentences as TLDR
@@ -254,7 +245,7 @@ Please analyze this content and provide a structured summary following the JSON 
     async def summarize_batch(
         self,
         documents: List[ContentDocument],
-        category: str = "general",
+        query: str,
         max_concurrent: int = 3,
     ) -> List[StructuredSummary]:
         """Summarize multiple documents concurrently"""
@@ -265,7 +256,7 @@ Please analyze this content and provide a structured summary following the JSON 
         
         async def summarize_with_semaphore(doc: ContentDocument) -> StructuredSummary:
             async with semaphore:
-                return await self.summarize(doc, category)
+                return await self.summarize(doc, query)
         
         logger.info(f"Summarizing {len(documents)} documents with max_concurrent={max_concurrent}")
         
@@ -280,7 +271,7 @@ Please analyze this content and provide a structured summary following the JSON 
             elif isinstance(result, Exception):
                 logger.error(f"Batch summarization error for document {i}: {result}")
                 # Create fallback summary
-                fallback = self._create_fallback_summary(documents[i], category)
+                fallback = self._create_fallback_summary(documents[i], query)
                 valid_summaries.append(fallback)
         
         logger.info(f"Successfully summarized {len(valid_summaries)} out of {len(documents)} documents")
@@ -290,7 +281,7 @@ Please analyze this content and provide a structured summary following the JSON 
 class SummaryRanker:
     """Ranks summaries by quality and relevance"""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.quality_weights = {
             'confidence_score': 0.3,
             'content_length': 0.2,

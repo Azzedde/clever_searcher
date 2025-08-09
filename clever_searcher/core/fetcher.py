@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import hashlib
+import random
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse, urljoin
 from datetime import datetime
@@ -11,6 +12,8 @@ import httpx
 import trafilatura
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, Browser, Page
+import PyPDF2
+import io
 
 from ..utils.config import settings
 
@@ -29,8 +32,8 @@ class ContentDocument:
         published_date: Optional[datetime] = None,
         language: str = "",
         content_hash: str = "",
-        metadata: Dict[str, Any] = None,
-        outlinks: List[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        outlinks: Optional[List[str]] = None,
         status_code: int = 200,
         content_length: int = 0,
     ):
@@ -84,8 +87,13 @@ class HttpxFetcher:
     def __init__(self, timeout: int = 30, max_redirects: int = 5):
         self.timeout = timeout
         self.max_redirects = max_redirects
+        self.user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        ]
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Accept-Encoding": "gzip, deflate",
@@ -96,11 +104,14 @@ class HttpxFetcher:
     async def fetch(self, url: str) -> Optional[ContentDocument]:
         """Fetch and extract content from URL"""
         try:
+            headers = self.headers.copy()
+            headers["User-Agent"] = random.choice(self.user_agents)
+
             async with httpx.AsyncClient(
                 timeout=self.timeout,
                 follow_redirects=True,
                 max_redirects=self.max_redirects,
-                headers=self.headers,
+                headers=headers,
             ) as client:
                 logger.debug(f"Fetching URL: {url}")
                 response = await client.get(url)
@@ -109,20 +120,23 @@ class HttpxFetcher:
                     logger.warning(f"HTTP {response.status_code} for URL: {url}")
                     return None
                 
-                # Check content type
                 content_type = response.headers.get("content-type", "").lower()
+                
+                if "application/pdf" in content_type:
+                    return self._extract_pdf_content(url, response.content, response.status_code)
+                
                 if not any(ct in content_type for ct in ["text/html", "application/xhtml"]):
                     logger.warning(f"Unsupported content type '{content_type}' for URL: {url}")
                     return None
                 
                 html_content = response.text
-                return self._extract_content(url, html_content, response.status_code)
+                return self._extract_html_content(url, html_content, response.status_code)
                 
         except Exception as e:
             logger.error(f"Failed to fetch URL {url}: {e}")
             return None
     
-    def _extract_content(self, url: str, html: str, status_code: int) -> Optional[ContentDocument]:
+    def _extract_html_content(self, url: str, html: str, status_code: int) -> Optional[ContentDocument]:
         """Extract content from HTML using trafilatura"""
         try:
             # Use trafilatura for main content extraction
@@ -160,8 +174,10 @@ class HttpxFetcher:
                 # Try common author meta tags
                 author_meta = soup.find("meta", attrs={"name": "author"}) or \
                              soup.find("meta", attrs={"property": "article:author"})
-                if author_meta:
-                    author = author_meta.get("content", "").strip()
+                if author_meta and hasattr(author_meta, 'get'):
+                    content = author_meta.get("content", "")
+                    if isinstance(content, str):
+                        author = content.strip()
             
             # Extract published date
             published_date = None
@@ -189,7 +205,7 @@ class HttpxFetcher:
                 content=extracted,
                 author=author,
                 published_date=published_date,
-                language=metadata.language if metadata else "",
+                language=metadata.language if metadata and metadata.language else "",
                 metadata={
                     "description": metadata.description if metadata else "",
                     "sitename": metadata.sitename if metadata else "",
@@ -203,6 +219,31 @@ class HttpxFetcher:
         except Exception as e:
             logger.error(f"Failed to extract content from {url}: {e}")
             return None
+    
+    def _extract_pdf_content(self, url: str, pdf_data: bytes, status_code: int) -> Optional[ContentDocument]:
+        """Extract content from PDF data"""
+        try:
+            with io.BytesIO(pdf_data) as f:
+                reader = PyPDF2.PdfReader(f)
+                text = "".join(page.extract_text() for page in reader.pages)
+                
+                if not text.strip():
+                    logger.warning(f"No text extracted from PDF: {url}")
+                    return None
+
+                title = reader.metadata.title if reader.metadata and reader.metadata.title else url.split("/")[-1]
+                author = reader.metadata.author if reader.metadata and reader.metadata.author else ""
+
+                return ContentDocument(
+                    url=url,
+                    title=str(title),
+                    content=text,
+                    author=str(author),
+                    status_code=status_code,
+                )
+        except Exception as e:
+            logger.error(f"Failed to extract content from PDF {url}: {e}")
+            return None
 
 
 class PlaywrightFetcher:
@@ -213,7 +254,7 @@ class PlaywrightFetcher:
         self.headless = headless
         self._browser: Optional[Browser] = None
     
-    async def __aenter__(self):
+    async def __aenter__(self) -> 'PlaywrightFetcher':
         self.playwright = await async_playwright().start()
         self._browser = await self.playwright.chromium.launch(
             headless=self.headless,
@@ -221,12 +262,12 @@ class PlaywrightFetcher:
         )
         return self
     
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         if self._browser:
             await self._browser.close()
         await self.playwright.stop()
     
-    async def close(self):
+    async def close(self) -> None:
         """Close the browser and playwright instance"""
         if self._browser:
             await self._browser.close()
@@ -241,6 +282,8 @@ class PlaywrightFetcher:
         
         page = None
         try:
+            if self._browser is None:
+                raise RuntimeError("Browser not initialized")
             page = await self._browser.new_page()
             
             # Set user agent and viewport
@@ -266,7 +309,7 @@ class PlaywrightFetcher:
             
             # Extract using the same method as httpx fetcher
             httpx_fetcher = HttpxFetcher()
-            return httpx_fetcher._extract_content(url, html_content, response.status)
+            return httpx_fetcher._extract_html_content(url, html_content, response.status)
             
         except Exception as e:
             logger.error(f"Playwright fetch failed for {url}: {e}")
@@ -275,7 +318,7 @@ class PlaywrightFetcher:
             if page:
                 await page.close()
     
-    async def _initialize_browser(self):
+    async def _initialize_browser(self) -> None:
         """Initialize browser if not already done"""
         if not self._browser:
             self.playwright = await async_playwright().start()
@@ -335,7 +378,7 @@ class SmartFetcher:
         self,
         urls: List[str],
         max_concurrent: int = 5,
-        delay: float = None,
+        delay: Optional[float] = None,
     ) -> List[ContentDocument]:
         """Fetch multiple URLs concurrently"""
         if delay is None:

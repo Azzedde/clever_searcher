@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
 
 from .core.planner import default_planner, CrawlPlan
@@ -11,12 +11,14 @@ from .core.searcher import default_searcher, SearchResult
 from .core.fetcher import default_fetcher, ContentDocument
 from .core.deduper import default_deduplicator, default_tracker
 from .core.summarizer import default_summarizer, StructuredSummary
-from .core.scorer import default_personalization
-from .core.simple_scorer import simple_personalization
+from .core.scorer import default_personalization, PersonalizationEngine
+from .core.simple_scorer import simple_personalization, SimplePersonalizationEngine
 from .output.digest import default_manager, DigestItem
 from .storage.database import get_db_session
 from .storage.models import CrawlRun, Page, Summary
 from .utils.config import settings
+from .logging.operation_logger import operation_logger, LogLevel
+from .logging.preference_collector import preference_collector
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,10 @@ class DiscoveryResult:
 class CleverSearcherAgent:
     """Main agent that orchestrates the discovery process"""
     
-    def __init__(self, search_engine: str = None):
+    # Type annotations for attributes
+    personalization: Union[PersonalizationEngine, SimplePersonalizationEngine]
+    
+    def __init__(self, search_engine: Optional[str] = None):
         self.planner = default_planner
         
         # Initialize searcher with specified engine
@@ -101,152 +106,334 @@ class CleverSearcherAgent:
     
     async def discover(
         self,
-        category: str,
-        user_query: str = "",
-        max_pages: int = None,
+        query: str,
+        max_pages: Optional[int] = None,
         max_queries: int = 6,
-        custom_sites: List[str] = None,
+        custom_sites: Optional[List[str]] = None,
         output_format: str = "markdown",
         user_id: str = "default",
         save_to_db: bool = True,
     ) -> DiscoveryResult:
         """Run a complete discovery cycle"""
         
-        logger.info(f"Starting discovery for category: {category}")
-        start_time = datetime.utcnow()
-        
-        # Reset state
-        self.reset_state()
-        
-        # Step 1: Create crawl plan
-        logger.info("Step 1: Creating crawl plan...")
-        plan = await self.planner.create_plan(
-            category=category,
-            user_query=user_query,
-            max_queries=max_queries,
-            max_pages=max_pages,
-            custom_sites=custom_sites,
+        # Start operation logging
+        operation_id = operation_logger.start_operation(
+            user_query=query,
+            metadata={
+                "max_pages": max_pages,
+                "max_queries": max_queries,
+                "custom_sites": custom_sites,
+                "output_format": output_format,
+                "user_id": user_id,
+                "save_to_db": save_to_db,
+            }
         )
         
-        # Step 2: Search for content
-        logger.info("Step 2: Searching for content...")
-        search_results = await self.searcher.search_category(
-            category=plan.category,
-            queries=plan.queries,
-            max_results=plan.max_pages,
-            site_preferences={plan.category: plan.preferred_sites} if plan.preferred_sites else None,
-        )
-        
-        logger.info(f"Found {len(search_results)} search results")
-        
-        # Step 3: Fetch and extract content
-        logger.info("Step 3: Fetching content...")
-        urls = [result.url for result in search_results]
-        documents = await self.fetcher.fetch_batch(
-            urls=urls,
-            max_concurrent=5,
-        )
-        
-        logger.info(f"Fetched {len(documents)} documents")
-        
-        # Step 4: Deduplicate content
-        logger.info("Step 4: Deduplicating content...")
-        unique_documents = []
-        
-        for doc in documents:
-            dup_result = self.deduplicator.check_duplicate(
-                url=doc.url,
-                title=doc.title,
-                content=doc.content,
-                content_id=doc.content_hash,
+        try:
+            logger.info(f"Starting discovery for query: {query}")
+            start_time = datetime.utcnow()
+            
+            # Reset state
+            self.reset_state()
+            
+            # Step 1: Create crawl plan
+            step_start = operation_logger.log_step_start(
+                component="planner",
+                operation="create_plan",
+                message="Creating crawl plan",
+                data={"query": query, "max_queries": max_queries}
             )
             
-            default_tracker.record_duplicate(dup_result)
+            plan = await self.planner.create_plan(
+                query=query,
+                max_queries=max_queries,
+                max_pages=max_pages or 10,
+                custom_sites=custom_sites or [],
+            )
             
-            if not dup_result['is_duplicate']:
-                unique_documents.append(doc)
+            operation_logger.log_step_end(
+                component="planner",
+                operation="create_plan",
+                message="Crawl plan created",
+                start_time=step_start,
+                data={
+                    "category": plan.category,
+                    "queries": plan.queries,
+                    "preferred_sites": plan.preferred_sites,
+                    "max_pages": plan.max_pages,
+                }
+            )
         
-        logger.info(f"After deduplication: {len(unique_documents)} unique documents")
+            # Step 2: Search for content
+            step_start = operation_logger.log_step_start(
+                component="searcher",
+                operation="search_category",
+                message="Searching for content",
+                data={
+                    "category": plan.category,
+                    "queries": plan.queries,
+                    "max_results": plan.max_pages,
+                }
+            )
+            
+            search_results = await self.searcher.search_category(
+                category=plan.category,
+                queries=plan.queries,
+                max_results=plan.max_pages,
+                site_preferences={plan.category: plan.preferred_sites} if plan.preferred_sites else {},
+            )
+            
+            operation_logger.log_step_end(
+                component="searcher",
+                operation="search_category",
+                message="Content search completed",
+                start_time=step_start,
+                data={
+                    "results_found": len(search_results),
+                    "domains": list(set(result.url.split('/')[2] for result in search_results if '/' in result.url)),
+                }
+            )
         
-        # Step 5: Generate summaries
-        logger.info("Step 5: Generating summaries...")
-        summaries = await self.summarizer.summarize_batch(
-            documents=unique_documents,
-            category=category,
-            max_concurrent=3,
-        )
+            # Step 3: Fetch and extract content
+            step_start = operation_logger.log_step_start(
+                component="fetcher",
+                operation="fetch_batch",
+                message="Fetching content",
+                data={"url_count": len(search_results)}
+            )
+            
+            urls = [result.url for result in search_results]
+            documents = await self.fetcher.fetch_batch(
+                urls=urls,
+                max_concurrent=5,
+            )
+            
+            operation_logger.log_step_end(
+                component="fetcher",
+                operation="fetch_batch",
+                message="Content fetching completed",
+                start_time=step_start,
+                data={
+                    "documents_fetched": len(documents),
+                    "success_rate": len(documents) / len(urls) if urls else 0,
+                }
+            )
         
-        logger.info(f"Generated {len(summaries)} summaries")
+            # Step 4: Deduplicate content
+            step_start = operation_logger.log_step_start(
+                component="deduplicator",
+                operation="deduplicate",
+                message="Deduplicating content",
+                data={"input_documents": len(documents)}
+            )
+            
+            unique_documents = []
+            
+            for doc in documents:
+                dup_result = self.deduplicator.check_duplicate(
+                    url=doc.url,
+                    title=doc.title,
+                    content=doc.content,
+                    content_id=doc.content_hash,
+                )
+                
+                default_tracker.record_duplicate(dup_result)
+                
+                if not dup_result['is_duplicate']:
+                    unique_documents.append(doc)
+            
+            dedup_stats = default_tracker.get_report()
+            operation_logger.log_step_end(
+                component="deduplicator",
+                operation="deduplicate",
+                message="Content deduplication completed",
+                start_time=step_start,
+                data={
+                    "unique_documents": len(unique_documents),
+                    "duplicates_removed": len(documents) - len(unique_documents),
+                    "deduplication_stats": dedup_stats,
+                }
+            )
         
-        # Step 6: Score and rank content
-        logger.info("Step 6: Scoring and ranking content...")
-        scored_docs = self.personalization.score_documents(
-            documents=unique_documents,
-            summaries=summaries,
-            query=user_query,
-            category=category,
-            user_id=user_id,
-        )
+            # Step 5: Generate summaries
+            step_start = operation_logger.log_step_start(
+                component="summarizer",
+                operation="summarize_batch",
+                message="Generating summaries",
+                data={"document_count": len(unique_documents)}
+            )
+            
+            summaries = await self.summarizer.summarize_batch(
+                documents=unique_documents,
+                query=query,
+                max_concurrent=3,
+            )
+            
+            operation_logger.log_step_end(
+                component="summarizer",
+                operation="summarize_batch",
+                message="Summary generation completed",
+                start_time=step_start,
+                data={
+                    "summaries_generated": len(summaries),
+                    "avg_read_time": sum(s.read_time_minutes for s in summaries) / len(summaries) if summaries else 0,
+                }
+            )
         
-        # Sort by score and extract components
-        final_documents = [doc for doc, score in scored_docs]
-        final_scores = [score for doc, score in scored_docs]
+            # Step 6: Score and rank content
+            step_start = operation_logger.log_step_start(
+                component="personalization",
+                operation="score_documents",
+                message="Scoring and ranking content",
+                data={"document_count": len(unique_documents)}
+            )
+            
+            scored_docs = self.personalization.score_documents(
+                documents=unique_documents,
+                summaries=summaries,
+                query=query,
+                category=plan.category,
+                user_id=user_id,
+            )
+            
+            # Sort by score and extract components
+            final_documents = [doc for doc, score in scored_docs]
+            final_scores = [score for doc, score in scored_docs]
+            
+            # Ensure summaries match the reordered documents
+            doc_to_summary = {doc.content_hash: summary for doc, summary in zip(unique_documents, summaries)}
+            final_summaries = [s for s in (doc_to_summary.get(doc.content_hash) for doc in final_documents) if s is not None]
+            
+            operation_logger.log_step_end(
+                component="personalization",
+                operation="score_documents",
+                message="Content scoring completed",
+                start_time=step_start,
+                data={
+                    "final_documents": len(final_documents),
+                    "avg_score": sum(final_scores) / len(final_scores) if final_scores else 0,
+                    "score_range": [min(final_scores), max(final_scores)] if final_scores else [0, 0],
+                }
+            )
         
-        # Ensure summaries match the reordered documents
-        doc_to_summary = {doc.content_hash: summary for doc, summary in zip(unique_documents, summaries)}
-        final_summaries = [doc_to_summary.get(doc.content_hash) for doc in final_documents]
-        
-        logger.info(f"Final ranking: {len(final_documents)} documents")
-        
-        # Step 7: Generate digest
-        logger.info("Step 7: Generating digest...")
-        digest_path = self.digest_manager.create_digest_from_results(
-            documents=final_documents,
-            summaries=final_summaries,
-            scores=final_scores,
-            title=f"{category.title()} Discovery",
-            category=category,
-            query=user_query,
-            format_type=output_format,
-        )
-        
-        # Step 8: Save to database (optional)
-        if save_to_db:
-            logger.info("Step 8: Saving to database...")
-            await self._save_to_database(
-                plan=plan,
+            # Step 7: Generate digest
+            step_start = operation_logger.log_step_start(
+                component="digest_manager",
+                operation="create_digest",
+                message="Generating digest",
+                data={"format": output_format}
+            )
+            
+            digest_path = self.digest_manager.create_digest_from_results(
                 documents=final_documents,
                 summaries=final_summaries,
                 scores=final_scores,
-                start_time=start_time,
+                title=f"{plan.category.title()} Discovery",
+                category=plan.category,
+                query=query,
+                format_type=output_format,
+            )
+            
+            operation_logger.log_step_end(
+                component="digest_manager",
+                operation="create_digest",
+                message="Digest generation completed",
+                start_time=step_start,
+                data={"digest_path": str(digest_path) if digest_path else None}
             )
         
-        # Compile statistics
-        end_time = datetime.utcnow()
-        duration = (end_time - start_time).total_seconds()
-        
-        stats = {
-            'duration_seconds': duration,
-            'search_results_found': len(search_results),
-            'documents_fetched': len(documents),
-            'unique_documents': len(unique_documents),
-            'summaries_generated': len(summaries),
-            'final_results': len(final_documents),
-            'deduplication_stats': default_tracker.get_report(),
-            'avg_score': sum(final_scores) / len(final_scores) if final_scores else 0,
-            'top_domains': self._get_top_domains(final_documents),
-        }
-        
-        logger.info(f"Discovery completed in {duration:.1f} seconds")
-        
-        return DiscoveryResult(
-            documents=final_documents,
-            summaries=final_summaries,
-            scores=final_scores,
-            plan=plan,
-            stats=stats,
-            digest_path=digest_path,
-        )
+            # Step 8: Save to database (optional)
+            if save_to_db:
+                step_start = operation_logger.log_step_start(
+                    component="database",
+                    operation="save_results",
+                    message="Saving to database"
+                )
+                
+                await self._save_to_database(
+                    plan=plan,
+                    documents=final_documents,
+                    summaries=final_summaries,
+                    scores=final_scores,
+                    start_time=start_time,
+                )
+                
+                operation_logger.log_step_end(
+                    component="database",
+                    operation="save_results",
+                    message="Database save completed",
+                    start_time=step_start
+                )
+            
+            # Compile statistics
+            end_time = datetime.utcnow()
+            duration = (end_time - start_time).total_seconds()
+            
+            stats = {
+                'duration_seconds': duration,
+                'search_results_found': len(search_results),
+                'documents_fetched': len(documents),
+                'unique_documents': len(unique_documents),
+                'summaries_generated': len(summaries),
+                'final_results': len(final_documents),
+                'deduplication_stats': default_tracker.get_report(),
+                'avg_score': sum(final_scores) / len(final_scores) if final_scores else 0,
+                'top_domains': self._get_top_domains(final_documents),
+            }
+            
+            # Collect preference data for GRPO training
+            domains_searched = list(set(result.url.split('/')[2] for result in search_results if '/' in result.url))
+            
+            # Enhanced LLM plan data with additional fields
+            enhanced_plan_data = plan.to_dict()
+            enhanced_plan_data.update({
+                "llm_max_pages": plan.max_pages,
+                "llm_freshness_days": plan.freshness_days,
+                "llm_include_news": plan.include_news,
+                "llm_time_range": plan.time_range,
+                "llm_reasoning": getattr(plan, 'reasoning', None),
+            })
+            
+            preference_collector.collect_llm_decision_data(
+                session_id=operation_id,
+                original_query=query,
+                llm_plan=enhanced_plan_data,
+                search_results={
+                    "domains_searched": domains_searched,
+                    "total_results": len(search_results),
+                    "unique_documents": len(unique_documents),
+                    "top_domains": self._get_top_domains(final_documents),
+                },
+                execution_metadata=stats
+            )
+            
+            # Complete operation logging
+            operation_logger.complete_operation(
+                status="completed",
+                final_data={
+                    "stats": stats,
+                    "operation_id": operation_id,
+                }
+            )
+            
+            logger.info(f"Discovery completed in {duration:.1f} seconds")
+            
+            return DiscoveryResult(
+                documents=final_documents,
+                summaries=final_summaries,
+                scores=final_scores,
+                plan=plan,
+                stats=stats,
+                digest_path=digest_path,
+            )
+            
+        except Exception as e:
+            # Log the error and fail the operation
+            operation_logger.fail_operation(
+                error_message=str(e),
+                error_data={"exception_type": type(e).__name__}
+            )
+            raise
     
     async def _save_to_database(
         self,
@@ -317,7 +504,7 @@ class CleverSearcherAgent:
     
     def _get_top_domains(self, documents: List[ContentDocument], top_n: int = 5) -> List[str]:
         """Get top domains from documents"""
-        domain_counts = {}
+        domain_counts: Dict[str, int] = {}
         for doc in documents:
             domain_counts[doc.domain] = domain_counts.get(doc.domain, 0) + 1
         
@@ -349,7 +536,7 @@ class CleverSearcherAgent:
         if include_summaries:
             summaries = await self.summarizer.summarize_batch(
                 documents=documents,
-                category="general",
+                query="general search",
                 max_concurrent=2,
             )
         
